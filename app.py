@@ -1,291 +1,306 @@
-# app.py
-# Streamlit app for MilkCrate — predicts genres and displays human-readable labels.
-# Works with a sklearn Pipeline saved as models/model_version3beatport.joblib
-# and a LabelEncoder saved as artifacts/label_encoder.joblib.
-#
-# If the encoder is missing, we try to build it from data/beatport_features.csv (column: 'genre').
+# app.py — MilkCrate Streamlit app (audio files → features → genre prediction → ZIP by folders)
+# - Accepts multiple audio files (mp3/wav/flac/ogg/m4a/aac/wma/aiff, etc.)
+# - Extracts features with librosa
+# - Uses your sklearn model + LabelEncoder to predict human-readable genres
+# - Organizes originals into genre-named folders and offers a ZIP for download
 
 import os
 import io
+import re
 import json
+import zipfile
+import unicodedata
+import warnings
+
 import joblib
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-DEFAULT_MODEL_PATH = "models/model_version3beatport.joblib"
-DEFAULT_ENCODER_PATH = "artifacts/label_encoder.joblib"
-DEFAULT_CSV_PATH = "data/beatport_features.csv"
-TARGET_COL_DEFAULT = "genre"
+# Audio
+import librosa
+import soundfile as sf  # ensures many formats via libsndfile
+import audioread        # fallback decoder
+from typing import Dict, List, Tuple
 
-st.set_page_config(page_title="MilkCrate Genre Classifier", layout="wide")
+# --------------------
+# Paths (you can change in the sidebar at runtime)
+# --------------------
+DEFAULT_MODEL_PATH = "artifacts/beatport201611_hgb.joblib"     # safe-size model you committed (46MB)
+DEFAULT_ENCODER_PATH = "artifacts/label_encoder.joblib"        # 23-class encoder you created
+TARGET_SR_DEFAULT = 22050
 
-# ----------------------------
-# Helpers
-# ----------------------------
+st.set_page_config(page_title="MilkCrate • Audio → Genre Folders", layout="wide")
+warnings.filterwarnings("ignore")
+
+# --------------------
+# Caching loaders
+# --------------------
 @st.cache_resource(show_spinner=False)
 def load_model(path: str):
     if not os.path.exists(path):
-        st.error(f"Model not found at {path}")
+        st.error(f"Model not found at: {path}")
         st.stop()
-    model = joblib.load(path)
-    return model
+    return joblib.load(path)
 
 @st.cache_resource(show_spinner=False)
-def load_or_build_encoder(enc_path: str, csv_path: str, target_col: str):
-    """Load LabelEncoder if available; otherwise build it from CSV with string labels."""
-    try:
-        if os.path.exists(enc_path):
-            enc = joblib.load(enc_path)
-            return enc, "loaded"
-    except Exception as e:
-        st.warning(f"Couldn't load encoder at {enc_path}: {e}")
+def load_encoder(path: str):
+    if not os.path.exists(path):
+        st.error(f"Encoder not found at: {path}")
+        st.stop()
+    return joblib.load(path)
 
-    # Try to build from CSV
-    if os.path.exists(csv_path):
-        try:
-            from sklearn.preprocessing import LabelEncoder
-            df = pd.read_csv(csv_path)
-            if target_col not in df.columns:
-                st.warning(f"CSV found at {csv_path}, but '{target_col}' column is missing. Encoder cannot be built.")
-                return None, "missing"
-            labels = df[target_col].astype(str)
-            enc = LabelEncoder().fit(labels)
-            os.makedirs(os.path.dirname(enc_path), exist_ok=True)
-            joblib.dump(enc, enc_path)
-            return enc, "built"
-        except Exception as e:
-            st.warning(f"Failed to build encoder from {csv_path}: {e}")
-            return None, "missing"
-
-    return None, "missing"
+# --------------------
+# Utilities
+# --------------------
+def sanitize_filename(name: str) -> str:
+    # Remove path parts & normalize unicode, make filesystem-friendly
+    base = os.path.basename(name)
+    base = unicodedata.normalize("NFKD", base).encode("ascii", "ignore").decode("ascii")
+    base = re.sub(r"[^\w\-.]+", "_", base).strip("._")
+    return base or "audio"
 
 def align_columns_to_model(X: pd.DataFrame, model):
     names = getattr(model, "feature_names_in_", None)
     if names is not None:
         missing = [c for c in names if c not in X.columns]
         if missing:
-            st.warning(f"{len(missing)} expected columns are missing in your input. Showing first few: {missing[:10]}")
+            st.warning(f"Input features missing {len(missing)} expected columns. First few: {missing[:10]}")
         X = X.reindex(columns=names)
     return X
 
 def get_display_names(model, encoder):
-    """Return array of display labels aligned to model.classes_."""
     classes = getattr(model, "classes_", None)
     if classes is None:
-        return None, None  # No class info
+        return None, None
     classes = np.array(classes)
-
-    # If classes are numeric, map them with encoder when available
+    # Model uses numeric class codes 0..22; map to genre names
     if np.issubdtype(classes.dtype, np.number):
-        if encoder is not None:
-            try:
-                names = encoder.inverse_transform(classes.astype(int))
-                return classes, names
-            except Exception as e:
-                st.warning(f"Couldn't inverse_transform classes with encoder: {e}")
-                return classes, classes.astype(str)
-        else:
-            return classes, classes.astype(str)
-    else:
-        # Model already has string labels
-        return classes, classes
-
-def predict_one(model, features_df: pd.DataFrame, encoder, top_k=5):
-    X = features_df.select_dtypes(include=[np.number])
-    X = align_columns_to_model(X, model)
-    y = model.predict(X)
-    # Map y (possibly numeric) to display string
-    if encoder is not None and np.issubdtype(np.array(y).dtype, np.number):
         try:
-            y_labels = encoder.inverse_transform(y.astype(int))
+            names = encoder.inverse_transform(classes.astype(int))
         except Exception:
-            y_labels = y.astype(str)
-    else:
-        y_labels = y
+            names = classes.astype(str)
+        return classes, names
+    return classes, classes
 
-    result = {"pred_idx": y, "pred_label": y_labels}
+# --------------------
+# Feature extraction
+# --------------------
+def extract_features_array(y: np.ndarray, sr: int) -> Dict[str, float]:
+    """
+    Compute a robust set of features. Names are generic; your model’s pipeline
+    should include an imputer, so any unseen/missing columns become NaN and are handled.
+    """
+    feats = {}
 
-    if hasattr(model, "predict_proba"):
-        prob = model.predict_proba(X)[0]
-        classes, names = get_display_names(model, encoder)
-        if classes is not None and names is not None:
-            order = np.argsort(prob)[::-1]
-            top = order[: min(top_k, len(order))]
-            top_table = pd.DataFrame(
-                {
-                    "rank": np.arange(1, len(top) + 1),
-                    "label": [names[i] for i in top],
-                    "class_code": [int(classes[i]) if np.issubdtype(classes.dtype, np.integer) else classes[i] for i in top],
-                    "probability": [float(prob[i]) for i in top],
-                }
-            )
-            result["topk"] = top_table
-    return result
+    if y is None or len(y) == 0:
+        return feats
 
-def read_uploaded_json_or_row(uploaded_bytes: bytes):
-    """Accept a JSON dict of features OR a CSV with a single row."""
-    text = uploaded_bytes.decode("utf-8", errors="ignore")
-    # Try JSON first
+    # Basic stats
+    feats["duration_s"] = float(len(y) / sr)
+    feats["rms_mean"] = float(np.mean(librosa.feature.rms(y=y)))
+    feats["rms_std"] = float(np.std(librosa.feature.rms(y=y)))
+    feats["zcr_mean"] = float(np.mean(librosa.feature.zero_crossing_rate(y)))
+    feats["zcr_std"] = float(np.std(librosa.feature.zero_crossing_rate(y)))
+
+    # Spectral
+    S, phase = librosa.magphase(librosa.stft(y=y, n_fft=2048, hop_length=512))
+    spec_centroid = librosa.feature.spectral_centroid(S=S, sr=sr)
+    spec_bw = librosa.feature.spectral_bandwidth(S=S, sr=sr)
+    spec_roll = librosa.feature.spectral_rolloff(S=S, sr=sr, roll_percent=0.85)
+
+    feats["spec_centroid_mean"] = float(np.mean(spec_centroid))
+    feats["spec_centroid_std"] = float(np.std(spec_centroid))
+    feats["spec_bw_mean"] = float(np.mean(spec_bw))
+    feats["spec_bw_std"] = float(np.std(spec_bw))
+    feats["spec_rolloff_mean"] = float(np.mean(spec_roll))
+    feats["spec_rolloff_std"] = float(np.std(spec_roll))
+
+    # Tempo
     try:
-        obj = json.loads(text)
-        if isinstance(obj, dict):
-            df = pd.DataFrame([obj])
-            return df
-        elif isinstance(obj, list) and obj and isinstance(obj[0], dict):
-            return pd.DataFrame(obj[:1])
+        tempo = librosa.beat.tempo(y=y, sr=sr, hop_length=512, aggregate=None)
+        feats["tempo_mean"] = float(np.mean(tempo)) if tempo.size else np.nan
+        feats["tempo_std"] = float(np.std(tempo)) if tempo.size else np.nan
+    except Exception:
+        feats["tempo_mean"] = np.nan
+        feats["tempo_std"] = np.nan
+
+    # Chroma
+    chroma = librosa.feature.chroma_stft(S=S, sr=sr)
+    feats["chroma_mean"] = float(np.mean(chroma))
+    feats["chroma_std"] = float(np.std(chroma))
+    for i in range(min(12, chroma.shape[0])):
+        feats[f"chroma_{i+1:02d}_mean"] = float(np.mean(chroma[i]))
+        feats[f"chroma_{i+1:02d}_std"] = float(np.std(chroma[i]))
+
+    # MFCCs
+    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=20)
+    for i in range(mfcc.shape[0]):
+        feats[f"mfcc_{i+1:02d}_mean"] = float(np.mean(mfcc[i]))
+        feats[f"mfcc_{i+1:02d}_std"] = float(np.std(mfcc[i]))
+
+    # Spectral contrast
+    try:
+        contrast = librosa.feature.spectral_contrast(S=S, sr=sr)
+        for i in range(contrast.shape[0]):
+            feats[f"contrast_{i+1:02d}_mean"] = float(np.mean(contrast[i]))
+            feats[f"contrast_{i+1:02d}_std"] = float(np.std(contrast[i]))
     except Exception:
         pass
-    # Try CSV fallback
-    try:
-        df = pd.read_csv(io.StringIO(text))
-        if len(df) > 1:
-            st.info(f"Detected CSV with {len(df)} rows. For single-item mode we'll use the first row.")
-        return df.head(1)
-    except Exception as e:
-        st.error("Couldn't parse the uploaded file as JSON or CSV (single row).")
-        st.caption(str(e))
-        return None
 
-# ----------------------------
+    # Tonnetz (optional; uses chroma_cqt)
+    try:
+        y_harm = librosa.effects.harmonic(y)
+        tonnetz = librosa.feature.tonnetz(y=y_harm, sr=sr)
+        for i in range(tonnetz.shape[0]):
+            feats[f"tonnetz_{i+1:02d}_mean"] = float(np.mean(tonnetz[i]))
+            feats[f"tonnetz_{i+1:02d}_std"] = float(np.std(tonnetz[i]))
+    except Exception:
+        pass
+
+    return feats
+
+def load_audio_any(uploaded_bytes: bytes, target_sr: int, mono: bool = True, max_duration_s: float = 120.0) -> Tuple[np.ndarray, int]:
+    """
+    Loads audio from bytes using librosa/audioread/soundfile. Trims/slices to max_duration_s.
+    """
+    with io.BytesIO(uploaded_bytes) as bio:
+        y, sr = librosa.load(bio, sr=target_sr, mono=mono, duration=max_duration_s)
+    # Ensure finite numeric values
+    if y is None:
+        y = np.zeros(int(target_sr * 1.0), dtype=np.float32)
+        sr = target_sr
+    y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
+    return y, sr
+
+def features_from_audio_bytes(uploaded_bytes: bytes, target_sr: int) -> Dict[str, float]:
+    y, sr = load_audio_any(uploaded_bytes, target_sr=target_sr, mono=True)
+    return extract_features_array(y, sr)
+
+# --------------------
+# Prediction helpers
+# --------------------
+def predict_dataframe(model, encoder, X: pd.DataFrame, top_k: int = 5):
+    X = align_columns_to_model(X, model)
+    y_pred = model.predict(X)
+    # Map numeric codes -> labels
+    if np.issubdtype(np.array(y_pred).dtype, np.number):
+        labels = encoder.inverse_transform(y_pred.astype(int))
+    else:
+        labels = y_pred.astype(str)
+
+    out = pd.DataFrame({"pred_idx": y_pred, "pred_label": labels})
+
+    if hasattr(model, "predict_proba"):
+        proba = model.predict_proba(X)
+        classes, names = get_display_names(model, encoder)
+        order = np.argsort(proba, axis=1)[:, ::-1][:, :min(top_k, proba.shape[1])]
+        # show top-k labels + probs
+        out["top_labels"] = [[names[i] for i in row] for row in order]
+        out["top_probs"] = [[float(proba[r, i]) for i in row] for r, row in enumerate(order)]
+
+    return out
+
+def build_zip_by_genre(rows: List[Tuple[str, str, bytes]]) -> bytes:
+    """
+    rows: list of (genre_label, original_filename, file_bytes)
+    returns: zip bytes (in-memory)
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for genre, fname, fbytes in rows:
+            safe_genre = sanitize_filename(genre or "Unknown")
+            safe_name = sanitize_filename(fname or "audio")
+            arcname = f"{safe_genre}/{safe_name}"
+            zf.writestr(arcname, fbytes)
+    buf.seek(0)
+    return buf.read()
+
+# --------------------
 # UI
-# ----------------------------
-st.title("🎛️ MilkCrate — Genre Classifier")
+# --------------------
+st.title("🎛️ MilkCrate — Drop audio files → get genre folders (ZIP)")
 
 with st.sidebar:
     st.header("Settings")
     model_path = st.text_input("Model path", value=DEFAULT_MODEL_PATH)
     encoder_path = st.text_input("Encoder path", value=DEFAULT_ENCODER_PATH)
-    csv_path = st.text_input("Fallback CSV (to build encoder if missing)", value=DEFAULT_CSV_PATH)
-    target_col = st.text_input("Target column name", value=TARGET_COL_DEFAULT)
-    top_k = st.number_input("Top-K", min_value=1, max_value=10, value=5, step=1)
+    target_sr = st.number_input("Target sample rate (Hz)", min_value=8000, max_value=48000, value=TARGET_SR_DEFAULT, step=1000)
+    top_k = st.number_input("Top-K probabilities", min_value=1, max_value=10, value=5, step=1)
+    max_duration = st.number_input("Analyze up to (seconds)", min_value=10, max_value=600, value=120, step=10)
 
 model = load_model(model_path)
-encoder, enc_state = load_or_build_encoder(encoder_path, csv_path, target_col)
+encoder = load_encoder(encoder_path)
 
-if enc_state == "built":
-    st.success(f"Built encoder from {csv_path} → {encoder_path}")
-elif enc_state == "loaded":
-    st.caption(f"Loaded encoder from {encoder_path}")
-else:
-    st.warning("No encoder available. Numeric predictions will be shown as class codes.")
-
-# Debug panel
-with st.expander("🔎 Debug: label map"):
+with st.expander("🔎 Debug: label map (model ↔ encoder)"):
     classes, names = get_display_names(model, encoder)
     if classes is not None:
-        df_map = pd.DataFrame({"class_code": classes, "label": names})
-        st.dataframe(df_map, use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame({"class_code": classes, "label": names}), use_container_width=True, hide_index=True)
     else:
-        st.info("Model has no .classes_ attribute.")
+        st.info("Model has no classes_ information.")
 
 st.markdown("---")
 
-tabs = st.tabs(["Single item", "Batch CSV"])
+st.subheader("Upload audio files (any common format)")
+uploaded = st.file_uploader(
+    "Drop multiple audio files here",
+    type=["wav", "mp3", "flac", "ogg", "m4a", "aac", "wma", "aiff", "aif", "aifc"],
+    accept_multiple_files=True
+)
 
-# ----------------------------
-# Single item tab
-# ----------------------------
-with tabs[0]:
-    st.subheader("Single item prediction")
-    st.caption("Upload a JSON dict (feature_name → value) or a CSV with one row of features.")
-
-    up = st.file_uploader("Upload features (JSON or 1-row CSV)", type=["json", "csv"], key="single")
-    if up is not None:
-        df = read_uploaded_json_or_row(up.getvalue())
-        if df is not None:
-            st.write("Parsed input (first row shown):")
-            st.dataframe(df.head(1), use_container_width=True)
-            try:
-                res = predict_one(model, df, encoder, top_k=top_k)
-                plabel = res["pred_label"][0]
-                st.success(f"Predicted genre: **{plabel}**")
-                if "topk" in res:
-                    st.markdown("**Top probabilities**")
-                    st.dataframe(res["topk"], use_container_width=True, hide_index=True)
-            except Exception as e:
-                st.error("Prediction failed.")
-                st.exception(e)
-
-# ----------------------------
-# Batch tab
-# ----------------------------
-with tabs[1]:
-    st.subheader("Batch predictions from CSV")
-    st.caption(
-        "Upload a CSV of feature rows. If it contains your target column "
-        f"('{target_col}'), we'll drop it before prediction and show class balance."
-    )
-    up_csv = st.file_uploader("Upload features CSV", type=["csv"], key="batch")
-    if up_csv is not None:
+if uploaded:
+    # Extract features for each file
+    rows = []
+    meta = []   # (original_name, feature_row_dict, raw_bytes)
+    progress = st.progress(0)
+    for i, f in enumerate(uploaded, start=1):
         try:
-            df = pd.read_csv(up_csv)
+            raw = f.read()
+            feats = features_from_audio_bytes(raw, target_sr=target_sr)
+            feats["file_name"] = sanitize_filename(f.name)
+            meta.append((f.name, feats, raw))
         except Exception as e:
-            st.error("Couldn't read CSV.")
-            st.caption(str(e))
-            df = None
+            st.error(f"Failed to process {f.name}: {e}")
+        progress.progress(i / len(uploaded))
+    progress.empty()
 
-        if df is not None:
-            st.write("Preview:")
-            st.dataframe(df.head(10), use_container_width=True)
+    if not meta:
+        st.error("No valid audio decoded.")
+        st.stop()
 
-            # Show class balance if target present
-            if target_col in df.columns:
-                st.markdown("**Target distribution (top 25)**")
-                st.dataframe(df[target_col].value_counts().head(25).to_frame("count"))
+    # Build feature dataframe
+    feat_df = pd.DataFrame([row for (_, row, _) in meta]).fillna(np.nan)
+    file_names = feat_df.pop("file_name").tolist() if "file_name" in feat_df.columns else [f"file_{i}" for i in range(len(meta))]
 
-            # Prepare X
-            X = df.copy()
-            if target_col in X.columns:
-                X = X.drop(columns=[target_col])
+    # Predict
+    try:
+        preds = predict_dataframe(model, encoder, feat_df, top_k=top_k)
+        preds.insert(0, "file_name", file_names)
+        st.markdown("**Predictions**")
+        st.dataframe(preds, use_container_width=True)
+    except Exception as e:
+        st.error("Prediction failed.")
+        st.exception(e)
+        st.stop()
 
-            # Keep numeric only (preprocessing pipeline usually handles this; this is conservative)
-            num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
-            if not num_cols:
-                st.error("No numeric columns detected in CSV.")
-            else:
-                X = X[num_cols]
-                X = align_columns_to_model(X, model)
+    # Build ZIP grouped by predicted genre
+    try:
+        package_rows = []
+        for (orig_name, _, raw), (_, row) in zip(meta, preds.iterrows()):
+            label = row["pred_label"]
+            package_rows.append((str(label), orig_name, raw))
 
-                # Predict
-                try:
-                    y_pred = model.predict(X)
-                    if encoder is not None and np.issubdtype(np.array(y_pred).dtype, np.number):
-                        y_label = encoder.inverse_transform(y_pred.astype(int))
-                    else:
-                        y_label = y_pred.astype(str)
+        zip_bytes = build_zip_by_genre(package_rows)
+        st.download_button(
+            "⬇️ Download organized ZIP",
+            data=zip_bytes,
+            file_name="milkcrate_genres.zip",
+            mime="application/zip",
+            use_container_width=True
+        )
+        st.success("ZIP ready: files have been placed into folders named by predicted genre.")
+    except Exception as e:
+        st.error(f"Failed to build ZIP: {e}")
 
-                    out = pd.DataFrame({"pred_idx": y_pred, "pred_label": y_label})
-                    if hasattr(model, "predict_proba"):
-                        proba = model.predict_proba(X)
-                        classes, names = get_display_names(model, encoder)
-                        if classes is not None and names is not None:
-                            top_idx = np.argsort(proba, axis=1)[:, ::-1][:, :top_k]
-                            top_labels = []
-                            top_probs = []
-                            for r, row in enumerate(top_idx):
-                                top_labels.append([names[i] for i in row])
-                                top_probs.append([float(proba[r, i]) for i in row])
-                            out["top_labels"] = top_labels
-                            out["top_probs"] = top_probs
-
-                    st.markdown("**Predictions**")
-                    st.dataframe(out.head(100), use_container_width=True)
-
-                    # Degenerate check
-                    uniq = pd.Series(out["pred_label"]).nunique(dropna=False)
-                    if uniq == 1:
-                        only = out["pred_label"].iloc[0]
-                        st.warning(
-                            f"All predictions in this preview are the same class → **{only}**.\n\n"
-                            "- Check class imbalance in training\n"
-                            "- Ensure the same preprocessing is used at train & inference\n"
-                            "- Verify encoder ↔ model mapping is correct\n"
-                            "- Confirm you’re loading the latest model artifact"
-                        )
-                except Exception as e:
-                    st.error("Prediction failed.")
-                    st.exception(e)
-
-st.markdown("---")
-st.caption("MilkCrate • model: VotingClassifier • labels via LabelEncoder")
+else:
+    st.info("Upload multiple audio files to classify and export.")
