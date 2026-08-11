@@ -1,0 +1,10 @@
+numpy==1.26.4
+pandas==2.2.2
+scikit-learn==1.6.1
+joblib==1.3.2
+lightgbm
+librosa==0.10.2.post1
+soundfile==0.12.1
+mutagen
+PyQt6
+pyarrow

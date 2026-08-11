@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+asyncpg
+pydantic
+numpy
+pandas
+scikit-learn
+lightgbm
+joblib
+pyarrow

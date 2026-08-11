@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.DS_Store
+build/
+dist/
+*.zip
+*.parquet
+model/artifacts/*.joblib
+venv/
+.venv/
