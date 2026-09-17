@@ -1,0 +1,14 @@
+# MilkCrate for Mac (Apple Silicon) — closed beta
+
+1. Unzip this file.
+2. Drag **MilkCrate** to Applications or Desktop.
+3. Open the app. If macOS says it is from an unidentified developer:
+   right-click → **Open**, or System Settings → Privacy & Security → **Open Anyway**.
+4. Create an account (name + email). Required for this beta.
+5. Drop a folder of tracks. After your first export, a feedback prompt appears.
+   You can also use **Report a problem** anytime.
+6. Optional: **Share corrections**, **Hot cues**, **Export**, **Send back to USB**.
+
+This is a test build. It may mis-tag tracks or crash. Do not post the zip publicly.
+
+Needs macOS 13+ on Apple Silicon (M1/M2/M3/M4).
