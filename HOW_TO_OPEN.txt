@@ -1,14 +1,252 @@
-# MilkCrate for Mac (Apple Silicon) — closed beta
+==============================================================
+ MilkCrate  —  closed beta guide
+ Sorts your EDM library into DJ-ready crates. Mac, Apple Silicon.
+==============================================================
 
-1. Unzip this file.
-2. Drag **MilkCrate** to Applications or Desktop.
-3. Open the app. If macOS says it is from an unidentified developer:
-   right-click → **Open**, or System Settings → Privacy & Security → **Open Anyway**.
-4. Create an account (name + email). Required for this beta.
-5. Drop a folder of tracks. After your first export, a feedback prompt appears.
-   You can also use **Report a problem** anytime.
-6. Optional: **Share corrections**, **Hot cues**, **Export**, **Send back to USB**.
 
-This is a test build. It may mis-tag tracks or crash. Do not post the zip publicly.
+--------------------------------------------------------------
+1.  INSTALL  (2 minutes)
+--------------------------------------------------------------
 
-Needs macOS 13+ on Apple Silicon (M1/M2/M3/M4).
+  1. Unzip this file.
+  2. Drag  MilkCrate  into your Applications folder.
+  3. Open Terminal and paste these two lines:
+
+         xattr -cr /Applications/MilkCrate.app
+         open /Applications/MilkCrate.app
+
+     Prefer not to use Terminal? Double-click
+     "If it wont open.command"  (right-click -> Open).
+
+  Why this step exists: this beta is not notarized by Apple yet,
+  so macOS blocks it on the first open. The command above clears
+  that flag. You only do it once.
+
+  On macOS 13 and 14 you can instead right-click MilkCrate -> Open.
+  On macOS 15 and newer that no longer works: try to open it, let
+  macOS block it, then go to
+  System Settings -> Privacy & Security -> Open Anyway.
+
+  Requirements:  Apple Silicon (M1 or newer, including M5), macOS 13+.
+                 Intel Macs are not supported in this beta.
+
+  First launch asks for your name and email. That is required for
+  the beta -- it is how you get update notices. Audio never leaves
+  your Mac.
+
+
+--------------------------------------------------------------
+2.  HOW IT WORKS  (the 30-second version)
+--------------------------------------------------------------
+
+  MilkCrate listens to each track, measures about 900 things about
+  the sound (rhythm, texture, energy, frequency balance), and matches
+  that against a model trained on a hand-sorted EDM library.
+
+  It sorts into five families:
+
+         House       Indie Dance       Minimal
+         Tech House  Techno
+
+  If the model is less than 35% sure, the track goes to Unsorted
+  instead of getting a bad guess. Unsorted is a good sign, not a bug.
+
+  Everything runs on your Mac. Your music is never uploaded.
+
+
+--------------------------------------------------------------
+3.  THE TWO WAYS TO USE IT
+--------------------------------------------------------------
+
+  A.  SORT A FOLDER OF TRACKS               (new music)
+      Drop files in  ->  fix anything wrong  ->  Export
+      ->  Send back to USB
+
+  B.  SORT A USB THAT REKORDBOX ALREADY EXPORTED   (existing library)
+      Open USB  ->  fix anything wrong
+      ->  Write playlists to USB
+
+  Path B never copies or moves your audio. It reads Rekordbox's own
+  database, sorts the tracks where they already sit, and adds
+  playlists. Your beatgrids, waveforms and existing cues stay intact.
+
+
+--------------------------------------------------------------
+4.  THE CORRECTION LOOP  --  this is the important part
+--------------------------------------------------------------
+
+  Every track in the list has a  Genre  dropdown on the right.
+  If MilkCrate gets one wrong, just pick the right genre.
+
+  The moment you do:
+
+     * the correction is saved
+     * that track is added to your personal training set
+     * the model retrains itself in the background (a few seconds)
+     * the status bar says
+       "Model updated. New drops will use what you taught it."
+
+  So the app genuinely gets smarter the more you correct it, and it
+  learns YOUR ears -- your idea of where Tech House ends and Techno
+  begins. Correct 20 tracks and you will see the difference on the
+  next folder you drop.
+
+  Two tips:
+
+     * Fix the red ones first. A red confidence number means the
+       model was unsure, so your answer teaches it the most.
+     * Corrections only change the model, never your audio files.
+
+  Tick  Share corrections  and your fixes also help the shared
+  model everyone gets. It sends only the numeric fingerprint and
+  the genre you picked -- never the song, never the filename.
+  It is off by default and entirely your call.
+
+
+--------------------------------------------------------------
+5.  EVERY BUTTON, TOP ROW
+--------------------------------------------------------------
+
+  Share corrections   Checkbox. Off by default. Opt in to send your
+   (checkbox)         corrections to the shared community model.
+                      Sends numbers and a genre label only -- never
+                      audio, never file names.
+
+  Report a problem    Opens a short form. Send a rating and a note
+                      straight to the developer. Use it any time
+                      something is wrong or confusing.
+
+  Hot cues            Suggests cue points for every track in the list:
+                        A  Intro    - start of the track
+                        B  Drop     - first energy lift
+                        C  Break    - breakdown / dip
+                        D  Drop 2   - second lift
+                        E  Outro    - last phrase
+                      Pick which ones you want. They get written for
+                      Pioneer decks when you Send back to USB.
+
+  Open USB            Reads a Rekordbox USB's database (export.pdb),
+                      lists every track already on the stick, and
+                      sorts it in place. No dragging, no second copy.
+
+  Learn from USB      Different from Open USB. This one reads the
+                      genre tags YOU already set in Rekordbox and
+                      uses them as training examples, then retrains.
+                      Best on a stick you have already tagged well.
+                      Takes several minutes. Files are linked, not
+                      copied.
+
+  Update model        Retrains now, using every correction you have
+                      made. Lights up once you correct something.
+                      Usually unnecessary -- corrections already
+                      trigger a retrain on their own.
+
+
+--------------------------------------------------------------
+6.  EVERY BUTTON, THE TRACK LIST
+--------------------------------------------------------------
+
+  Drop zone           Drag in tracks or whole folders.
+                      Accepts AIFF, WAV, MP3, FLAC, M4A.
+                      Subfolders are included automatically.
+
+  Play  (triangle)    Preview the track right in the app.
+                      Click again to pause.
+
+  Track               The file name.
+
+  Family              Which crate it is headed for.
+
+  Confidence          How sure the model is.
+                      Shown in RED below 35%, which means the track
+                      is going to Unsorted. Best place to spend your
+                      corrections.
+
+  Genre  (dropdown)   Change this to correct the model. See section 4.
+
+
+--------------------------------------------------------------
+7.  EVERY BUTTON, THE BIG ONE AT THE BOTTOM
+--------------------------------------------------------------
+
+  Export              Converts the sorted crate to 24-bit / 44.1 kHz
+                      AIFF -- the format Pioneer decks like best --
+                      into folders by genre at:
+
+                          ~/Desktop/MilkCrate Export
+
+                      Your original files are left untouched.
+
+  Send back to USB    Appears after Export finishes. Copies those
+   (same button)      AIFF crates onto your Pioneer USB and adds
+                      Playlists -> MilkCrate, plus any hot cues you
+                      generated. On the deck: Playlists -> MilkCrate.
+
+  Write playlists     Appears instead, after Open USB. Adds
+   to USB             Playlists -> MilkCrate <date> to the stick,
+                      one playlist per family, pointing at the
+                      tracks already there. Nothing is copied.
+
+  Either way, export.pdb is backed up before anything is written,
+  and restored automatically if the write fails.
+
+
+--------------------------------------------------------------
+8.  UPDATES
+--------------------------------------------------------------
+
+  When a new build is out, MilkCrate tells you as soon as you open
+  it and offers an  Update now  button. It downloads and installs
+  the new version and reopens itself. No Terminal, no re-dragging.
+
+  Choose  Later  and it will ask again next time.
+
+
+--------------------------------------------------------------
+9.  WHERE THINGS LIVE
+--------------------------------------------------------------
+
+  ~/Desktop/MilkCrate Export     exported AIFF crates
+  ~/Desktop/data/training        tracks you corrected
+  ~/.milkcrate                   settings, your updated model, logs
+
+
+--------------------------------------------------------------
+10.  IF SOMETHING GOES WRONG
+--------------------------------------------------------------
+
+  This is a test build. It can mis-tag tracks and it can crash.
+  That is what the beta is for -- please report it.
+
+  App will not open
+      Re-run the two Terminal lines in section 1.
+      Check Apple menu -> About This Mac says Apple M-series,
+      not Intel.
+      Still stuck? Email the file  ~/.milkcrate/launch.log
+
+  A track will not play or classify
+      Usually a corrupt or DRM-protected file. Try it in another
+      player first.
+
+  Everything landed in Unsorted
+      The model was unsure. Correct a handful by hand -- it learns
+      fast -- or send a note with Report a problem.
+
+  Sorting is slow
+      Normal. Every track gets a full ~900-feature analysis. A big
+      USB can take a while. It runs in the background; you can keep
+      using the list.
+
+
+--------------------------------------------------------------
+PRIVACY,  IN PLAIN TERMS
+--------------------------------------------------------------
+
+  Never leaves your Mac:   your audio, your file names, your folders.
+  Sent to the developer:   your name and email (for updates),
+                           crash reports, feedback you write, and --
+                           only if you tick Share corrections --
+                           anonymous numeric fingerprints plus the
+                           genre label you chose.
+
+  Invited testers only. Please do not repost the download.
